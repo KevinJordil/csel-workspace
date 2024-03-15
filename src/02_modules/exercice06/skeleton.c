@@ -1,55 +1,52 @@
 /* skeleton.c */
-#include <linux/module.h>	/* needed by all modules */
-#include <linux/init.h>		/* needed for macros */
-#include <linux/kernel.h>	/* needed for debugging */
+#include <linux/delay.h>       /* needed for delay fonctions */
+#include <linux/init.h>        /* needed for macros */
+#include <linux/io.h>          /* needed for mmio handling */
+#include <linux/ioport.h>      /* needed for memory region handling */
+#include <linux/kernel.h>      /* needed for debugging */
+#include <linux/kthread.h>     /* needed for kernel thread management */
+#include <linux/list.h>        /* needed for linked list processing */
+#include <linux/module.h>      /* needed by all modules */
+#include <linux/moduleparam.h> /* needed for module parameters */
+#include <linux/slab.h>        /* needed for dynamic memory allocation */
+#include <linux/string.h>      /* needed for string handling */
 
-#include <linux/moduleparam.h>	/* needed for module parameters */
+struct task_struct* module_thread;
 
-#include <linux/slab.h>		/* needed for dynamic memory allocation */
-#include <linux/list.h>		/* needed for linked list processing */
-#include <linux/string.h>	/* needed for string handling */
-
-#include <linux/ioport.h>	/* needed for memory region handling */
-#include <linux/io.h>		/* needed for mmio handling */
-
-#include <linux/kthread.h>	/* needed for kernel thread management */
-#include <linux/delay.h>	/* needed for delay fonctions */
-
-
-static struct task_struct* my_thread;
-
-
-static int skeleton_thread (void* data)
+// thread function
+static int module_thread_function(void* data)
 {
-	pr_info ("skeleton thread is now active...\n");
-	while(!kthread_should_stop()) {
-		ssleep (5);
-		pr_info ("skeleton thread is kick every 5 seconds...\n");
-	}
-	return 0;
+    pr_info("Module 06 thread is now active...\n");
+    while (!kthread_should_stop()) {
+        ssleep(5);
+        pr_info("module thread is kick every 5 seconds...\n");
+    }
+    return 0;
 }
-
 
 static int __init skeleton_init(void)
 {
-	pr_info ("Linux module 06 skeleton loaded\n");
+    pr_info("Linux module 06 loading...\n");
 
-	my_thread = kthread_run (skeleton_thread, 0, "s/thread");
+    module_thread = kthread_run(module_thread_function, 0, "module_thread");
 
-	return 0;
+    pr_info("Linux module 06 loaded\n");
+
+    return 0;
 }
 
 static void __exit skeleton_exit(void)
 {
-	kthread_stop (my_thread);
+    pr_info("Linux module skeleton unloading...\n");
 
-	pr_info ("Linux module skeleton unloaded\n");
+    kthread_stop(module_thread);
+
+    pr_info("Linux module skeleton unloaded\n");
 }
 
-module_init (skeleton_init);
-module_exit (skeleton_exit);
+module_init(skeleton_init);
+module_exit(skeleton_exit);
 
-MODULE_AUTHOR ("Daniel Gachet <daniel.gachet@hefr.ch>");
-MODULE_DESCRIPTION ("Module skeleton");
-MODULE_LICENSE ("GPL");
-
+MODULE_AUTHOR("Daniel Gachet <daniel.gachet@hefr.ch>");
+MODULE_DESCRIPTION("Module skeleton");
+MODULE_LICENSE("GPL");
