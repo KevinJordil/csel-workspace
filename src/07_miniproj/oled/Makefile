@@ -38,7 +38,7 @@ clean:
 clean_all: clean
 
 CVER     := aarch64-linux-
-KVER     := 5.15.21
+KVER     := 5.15.148
 CPU      := arm64
 
 KDIR     := /buildroot/output/build/linux-$(KVER)/
