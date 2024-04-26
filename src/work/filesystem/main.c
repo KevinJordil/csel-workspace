@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
+#include <syslog.h>
 #include <unistd.h>
 
 #define GPIO_EXPORT "/sys/class/gpio/export"
@@ -20,8 +21,11 @@
 #define BUTTON1 "2"
 #define BUTTON2 "3"
 
+#define DEFAULT_PERIOD 500  // ms
+
 static int led_fd;
 static int button_fds[3];
+static int timer_fd;
 
 static void set_led_state(int state)
 {
@@ -93,9 +97,24 @@ static void init_buttons()
     button_fds[2] = open(GPIO_BUTTON2 "/value", O_RDONLY);
 }
 
+// Update led frequency
+static int update_led_frequency(float period)
+{
+    // Setup timer expiration
+    struct itimerspec timer_spec;
+    timer_spec.it_interval.tv_sec  = period / 1000000000;
+    timer_spec.it_interval.tv_nsec = (int)period % 1000000000;
+    timer_spec.it_value            = timer_spec.it_interval;
+    if (timerfd_settime(timer_fd, 0, &timer_spec, NULL) == -1) {
+        perror("timerfd_settime");
+        return -1;
+    }
+    return 0;
+}
+
 int main(int argc, char* argv[])
 {
-    long period = 500;  // ms
+    float period = DEFAULT_PERIOD;  // ms
     if (argc >= 2) period = atoi(argv[1]);
     period *= 1000000;  // in ns
 
@@ -104,21 +123,14 @@ int main(int argc, char* argv[])
     init_buttons();
 
     // Create timerfd
-    int timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+    timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
     if (timer_fd == -1) {
         perror("timerfd_create");
         return 1;
     }
 
     // Setup timer expiration
-    struct itimerspec timer_spec;
-    timer_spec.it_interval.tv_sec  = period / 1000000000;
-    timer_spec.it_interval.tv_nsec = period % 1000000000;
-    timer_spec.it_value            = timer_spec.it_interval;
-    if (timerfd_settime(timer_fd, 0, &timer_spec, NULL) == -1) {
-        perror("timerfd_settime");
-        return 1;
-    }
+    if (update_led_frequency(period) == -1) return 1;
 
     // Create epoll instance
     int epoll_fd = epoll_create1(0);
@@ -138,7 +150,7 @@ int main(int argc, char* argv[])
 
     for (int i = 0; i < 3; ++i) {
         struct epoll_event event;
-        event.events  = EPOLLIN;
+        event.events  = EPOLLET;
         event.data.fd = button_fds[i];
         lseek(button_fds[i], 0, SEEK_SET);  // Consume any pending events
         char buffer[8];
@@ -148,6 +160,9 @@ int main(int argc, char* argv[])
             return 1;
         }
     }
+
+    char buf;
+    int led_state = 0;
 
     // Event loop
     while (1) {
@@ -162,43 +177,33 @@ int main(int argc, char* argv[])
         for (int i = 0; i < num_events; ++i) {
             if (events[i].data.fd == timer_fd) {
                 uint64_t exp;
-                static int state = 0;
                 read(timer_fd, &exp, sizeof(exp));  // Consume the event
-                state = !state;
-                set_led_state(state);
+                led_state = !led_state;
+                set_led_state(led_state);
+
             } else if (events[i].data.fd == button_fds[0]) {
-                static int old_state_0 = 0;
-                char buf;
                 lseek(button_fds[0], 0, SEEK_SET);
                 read(button_fds[0], &buf, 1);  // Consume the event
-                if (buf == '1' && old_state_0 == 0) {
-                    printf("Button 0 pressed\n");
-                    old_state_0 = 1;
-                } else if (buf == '0' && old_state_0 == 1) {
-                    old_state_0 = 0;
-                }
+                // Increase led blink frequency
+                period /= 2;
+                if (update_led_frequency(period) == -1) return 1;
+                syslog(LOG_INFO, "Frequency increased");
+
             } else if (events[i].data.fd == button_fds[1]) {
-                static int old_state_1 = 0;
-                char buf;
                 lseek(button_fds[1], 0, SEEK_SET);
                 read(button_fds[1], &buf, 1);  // Consume the event
-                if (buf == '1' && old_state_1 == 0) {
-                    printf("Button 1 pressed\n");
-                    old_state_1 = 1;
-                } else if (buf == '0' && old_state_1 == 1) {
-                    old_state_1 = 0;
-                }
+                // Reset default led blink frequency
+                period = DEFAULT_PERIOD * 1000000;  // in ns
+                if (update_led_frequency(period) == -1) return 1;
+                syslog(LOG_INFO, "Frequency reset\n");
+
             } else if (events[i].data.fd == button_fds[2]) {
-                static int old_state_2 = 0;
-                char buf;
                 lseek(button_fds[2], 0, SEEK_SET);
                 read(button_fds[2], &buf, 1);  // Consume the event
-                if (buf == '1' && old_state_2 == 0) {
-                    printf("Button 2 pressed\n");
-                    old_state_2 = 1;
-                } else if (buf == '0' && old_state_2 == 1) {
-                    old_state_2 = 0;
-                }
+                // Decrease led blink frequency
+                period *= 2;
+                if (update_led_frequency(period) == -1) return 1;
+                syslog(LOG_INFO, "Frequency decreased\n");
             }
         }
     }
