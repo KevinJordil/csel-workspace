@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <syslog.h>
 #include <unistd.h>
 
@@ -30,9 +31,11 @@
 #define MODE_AUTO "1"
 #define MODE_MANUAL "0"
 #define CPU_TEMP "/sys/class/thermal/thermal_zone0/temp"
+#define FIFO_FILE_NAME "/tmp/led_blink_fifo"
 
 #define DEFAULT_PERIOD 500  // ms
 
+static int fifo_fd;
 static int cpu_temp_fd;
 static int mode_fd;
 static int freq_fd;
@@ -150,6 +153,21 @@ static void init_buttons()
     button_fds[2] = open(GPIO_BUTTON2 "/value", O_RDONLY);
 }
 
+int init_fifo()
+{
+    if (mkfifo(FIFO_FILE_NAME, 0666) == -1) {
+        syslog(LOG_ERR, "mkfifo failed: %s", strerror(errno));
+    }
+
+    fifo_fd = open(FIFO_FILE_NAME, O_RDONLY | O_NONBLOCK);
+    if (fifo_fd == -1) {
+        syslog(LOG_ERR, "open failed: %s", strerror(errno));
+        return -1;
+    }
+
+    return 0;
+}
+
 static int get_cpu_temp()
 {
     char buffer[16];
@@ -213,6 +231,13 @@ static void switch_led_mode()
 {
     const char* new_mode =
         (strcmp(mode, MODE_AUTO) == 0) ? MODE_MANUAL : MODE_AUTO;
+    lseek(mode_fd, 0, SEEK_SET);
+    write(mode_fd, new_mode, strlen(new_mode));
+    mode = new_mode;
+}
+
+static void set_led_mode(const char* new_mode)
+{
     lseek(mode_fd, 0, SEEK_SET);
     write(mode_fd, new_mode, strlen(new_mode));
     mode = new_mode;
@@ -308,6 +333,10 @@ int main(int argc, char* argv[])
     init_freq();
     init_cpu_temp();
     ssd1306_init();
+    if (init_fifo() == -1) {
+        syslog(LOG_ERR, "init_fifo failed");
+        exit(EXIT_FAILURE);
+    }
 
     display_info(period);
 
@@ -321,6 +350,15 @@ int main(int argc, char* argv[])
     int epoll_fd = epoll_create1(0);
     if (epoll_fd == -1) {
         syslog(LOG_ERR, "epoll_create1 failed: %s", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+
+    // Add fifo to epoll
+    struct epoll_event fifo_event;
+    fifo_event.events  = EPOLLIN;
+    fifo_event.data.fd = fifo_fd;
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fifo_fd, &fifo_event) == -1) {
+        syslog(LOG_ERR, "epoll_ctl failed: %s", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
@@ -347,8 +385,8 @@ int main(int argc, char* argv[])
 
     // Event loop
     while (1) {
-        struct epoll_event events[3];  // 3 buttons + timer
-        int num_events = epoll_wait(epoll_fd, events, 3, -1);
+        struct epoll_event events[4];  // 3 buttons + fifo
+        int num_events = epoll_wait(epoll_fd, events, 4, -1);
         if (num_events == -1) {
             syslog(LOG_ERR, "epoll_wait failed: %s", strerror(errno));
             exit(EXIT_FAILURE);
@@ -412,6 +450,27 @@ int main(int argc, char* argv[])
                 } else {
                     btn3_state = 0;
                     set_led_state(led_state = !led_state);
+                }
+            } else if (events[i].data.fd == fifo_fd) {
+                // Read from fifo
+                char buffer[16];
+                int len     = read(fifo_fd, buffer, sizeof(buffer));
+                buffer[len] = '\0';
+                if (buffer[0] == 'a') {
+                    set_led_mode(MODE_AUTO);
+                    display_info(period);
+                    syslog(LOG_INFO, "Mode switched\n");
+                } else if (buffer[0] == 'm') {
+                    int freq = atoi(buffer + 1);
+                    freq     = freq == 0 ? 1 : freq;
+                    period   = 1000000000 / freq;
+                    set_led_mode(MODE_MANUAL);
+                    if (update_led_frequency(period) == -1) {
+                        syslog(LOG_ERR, "update_led_frequency failed");
+                        exit(EXIT_FAILURE);
+                    }
+                    display_info(period);
+                    syslog(LOG_INFO, "Mode manual\n");
                 }
             }
         }
